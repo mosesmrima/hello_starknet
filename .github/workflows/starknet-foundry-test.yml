@@ -36,12 +36,7 @@ jobs:
           scarb --version
           snforge --version
 
-      - name: Install dependencies
-        run: scarb install
 
-      - name: Build contract
-        run: scarb build
-        continue-on-error: false
 
       - name: Run Starknet Foundry tests
         id: test_run
