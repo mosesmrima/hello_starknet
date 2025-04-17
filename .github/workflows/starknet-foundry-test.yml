@@ -1,5 +1,4 @@
 name: Starknet Foundry Tests
-
 on:
   push:
     branches: [ main, master ]
@@ -11,7 +10,6 @@ jobs:
   test:
     name: Run Starknet Foundry Tests
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,40 +34,99 @@ jobs:
           scarb --version
           snforge --version
 
-      - name: Run Starknet Foundry tests
+      - name: Run Starknet Foundry tests with detailed output
         id: test_run
-        run: snforge test
-        continue-on-error: true
-
-      - name: Process test results
-        if: always()
         run: |
-          if [ "${{ steps.test_run.outcome }}" == "success" ]; then
-            echo "✅ All tests passed!"
-            echo "TEST_STATUS=passed" >> $GITHUB_ENV
-          else
-            echo "❌ Tests failed. See logs for details."
-            echo "TEST_STATUS=failed" >> $GITHUB_ENV
-          fi
+          # Run tests and capture all output
+          OUTPUT=$(snforge test 2>&1) || true
+          
+          # Store the full output for debugging
+          echo "$OUTPUT" > full_test_output.txt
+          
+          # Extract test results and format as structured JSON
+          echo "$OUTPUT" | python3 -c "
+import sys
+import json
+import re
 
-      - name: Create test summary
+output = sys.stdin.read()
+
+# Extract test results using regex
+tests = []
+test_pattern = r'\[(PASS|FAIL)\] ([^(]+)'
+failure_pattern = r'Failure data:\s+(.*)'
+
+current_test = None
+for line in output.split('\n'):
+    test_match = re.search(test_pattern, line)
+    if test_match:
+        status = test_match.group(1)
+        test_name = test_match.group(2).strip()
+        current_test = {
+            'name': test_name,
+            'success': status == 'PASS',
+            'reason': None
+        }
+        tests.append(current_test)
+    
+    # If we have a current test and this is a failure line, capture the entire failure data
+    if current_test and not current_test['success']:
+        failure_match = re.search(failure_pattern, line)
+        if failure_match:
+            reason = failure_match.group(1).strip()
+            current_test['reason'] = reason
+
+# Create summary stats
+passed = sum(1 for t in tests if t['success'])
+failed = sum(1 for t in tests if not t['success'])
+
+result = {
+    'summary': {
+        'total': len(tests),
+        'passed': passed,
+        'failed': failed
+    },
+    'tests': tests
+}
+
+# Output JSON result
+print(json.dumps(result, indent=2))
+          " > test_results.json
+
+      - name: Create readable test summary
         if: always()
         run: |
           echo "## Test Results" > test_summary.md
-          if [ "$TEST_STATUS" == "passed" ]; then
-            echo "✅ **All tests passed!**" >> test_summary.md
-          else
-            echo "❌ **Tests failed**" >> test_summary.md
-            echo "" >> test_summary.md
-            echo "### Failure Logs" >> test_summary.md
-            echo '```' >> test_summary.md
-            echo "${{ steps.test_run.outputs.stderr || 'No detailed error information available' }}" >> test_summary.md
-            echo '```' >> test_summary.md
-          fi
+          
+          # Use jq to parse the JSON and create a summary
+          TOTAL=$(jq '.summary.total' test_results.json)
+          PASSED=$(jq '.summary.passed' test_results.json)
+          FAILED=$(jq '.summary.failed' test_results.json)
+          
+          echo "**Summary:** $PASSED/$TOTAL passed, $FAILED failed" >> test_summary.md
+          
+          echo "### Detailed Results" >> test_summary.md
+          echo "| Test | Status | Reason (if failed) |" >> test_summary.md
+          echo "|------|--------|---------------------|" >> test_summary.md
+          
+          jq -r '.tests[] | "| " + .name + " | " + (if .success then "✅ PASS" else "❌ FAIL" end) + " | " + (if .reason then .reason else "" end) + " |"' test_results.json >> test_summary.md
+          
+          echo "" >> test_summary.md
+          echo "### Raw Test Output" >> test_summary.md
+          echo '```' >> test_summary.md
+          cat full_test_output.txt >> test_summary.md
+          echo '```' >> test_summary.md
+
+      - name: Upload test results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-json
+          path: test_results.json
 
       - name: Upload test summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-summary
           path: test_summary.md
