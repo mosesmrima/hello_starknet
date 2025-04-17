@@ -36,8 +36,6 @@ jobs:
           scarb --version
           snforge --version
 
-
-
       - name: Run Starknet Foundry tests
         id: test_run
         run: snforge test
@@ -67,6 +65,7 @@ jobs:
             echo '```' >> test_summary.md
             echo "${{ steps.test_run.outputs.stderr || 'No detailed error information available' }}" >> test_summary.md
             echo '```' >> test_summary.md
+          fi
 
       - name: Upload test summary
         if: always()
