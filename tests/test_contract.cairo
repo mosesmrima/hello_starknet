@@ -1,7 +1,5 @@
 use starknet::ContractAddress;
-
 use snforge_std::{declare, ContractClassTrait, DeclareResultTrait};
-
 use hello_starknet::IHelloStarknetSafeDispatcher;
 use hello_starknet::IHelloStarknetSafeDispatcherTrait;
 use hello_starknet::IHelloStarknetDispatcher;
@@ -16,14 +14,12 @@ fn deploy_contract(name: ByteArray) -> ContractAddress {
 #[test]
 fn test_increase_balance() {
     let contract_address = deploy_contract("HelloStarknet");
-
+    
     let dispatcher = IHelloStarknetDispatcher { contract_address };
-
     let balance_before = dispatcher.get_balance();
     assert(balance_before == 0, 'Invalid balance');
-
+    
     dispatcher.increase_balance(42);
-
     let balance_after = dispatcher.get_balance();
     assert(balance_after == 42, 'Invalid balance');
 }
@@ -32,16 +28,48 @@ fn test_increase_balance() {
 #[feature("safe_dispatcher")]
 fn test_cannot_increase_balance_with_zero_value() {
     let contract_address = deploy_contract("HelloStarknet");
-
+    
     let safe_dispatcher = IHelloStarknetSafeDispatcher { contract_address };
-
     let balance_before = safe_dispatcher.get_balance().unwrap();
     assert(balance_before == 0, 'Invalid balance');
-
+    
     match safe_dispatcher.increase_balance(0) {
         Result::Ok(_) => core::panic_with_felt252('Should have panicked'),
         Result::Err(panic_data) => {
             assert(*panic_data.at(0) == 'Amount cannot be 0', *panic_data.at(0));
         }
     };
+}
+
+#[test]
+fn test_that_will_fail() {
+    let contract_address = deploy_contract("HelloStarknet");
+    
+    let dispatcher = IHelloStarknetDispatcher { contract_address };
+    let balance_before = dispatcher.get_balance();
+    assert(balance_before == 0, 'Initial balance is 0');
+    
+    // Increase balance by 10
+    dispatcher.increase_balance(10);
+    
+    // This assertion will fail because we expect 100 but the actual value is 10
+    let balance_after = dispatcher.get_balance();
+    assert(balance_after == 100, 'Wrong balance');
+}
+
+
+#[test]
+fn another_test_that_will_fail() {
+    let contract_address = deploy_contract("HelloStarknet");
+    
+    let dispatcher = IHelloStarknetDispatcher { contract_address };
+    let balance_before = dispatcher.get_balance();
+    assert(balance_before == 0, 'Initial balance is 0');
+    
+    // Increase balance by 10
+    dispatcher.increase_balance(10);
+    
+    // This assertion will fail because we expect 100 but the actual value is 10
+    let balance_after = dispatcher.get_balance();
+    assert(balance_after == 100, 'Wrong balance');
 }
