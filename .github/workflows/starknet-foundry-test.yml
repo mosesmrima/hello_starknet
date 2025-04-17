@@ -5,49 +5,41 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   test:
     name: Run Starknet Foundry Tests
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: Setup asdf
-        uses: asdf-vm/actions/setup@v3
-      
-      - name: Install asdf plugins
-        run: |
-          asdf plugin add scarb || echo "scarb plugin already installed"
-          asdf plugin add starknet-foundry || echo "starknet-foundry plugin already installed"
-      
-      - name: Install Scarb and Starknet Foundry
-        run: |
-          asdf install scarb latest
-          asdf install starknet-foundry latest
-          asdf local scarb latest
-          asdf local starknet-foundry latest
-      
+
+      - name: Install asdf and tools
+        uses: asdf-vm/actions/install@v4
+        with:
+          tool_versions: |
+            scarb latest
+            starknet-foundry latest
+
       - name: Verify installations
         run: |
           scarb --version
           snforge --version
-      
+
       - name: Install dependencies
         run: scarb install
-      
+
       - name: Build contract
         run: scarb build
-        continue-on-error: false  # Fail workflow if build fails
-      
+        continue-on-error: false
+
       - name: Run Starknet Foundry tests
         id: test_run
         run: snforge test
-        continue-on-error: true  # Continue workflow even if tests fail
-      
+        continue-on-error: true
+
       - name: Process test results
         if: always()
         run: |
@@ -58,7 +50,7 @@ jobs:
             echo "❌ Tests failed. See logs for details."
             echo "TEST_STATUS=failed" >> $GITHUB_ENV
           fi
-      
+
       - name: Create test summary
         if: always()
         run: |
@@ -72,8 +64,7 @@ jobs:
             echo '```' >> test_summary.md
             echo "${{ steps.test_run.outputs.stderr || 'No detailed error information available' }}" >> test_summary.md
             echo '```' >> test_summary.md
-          fi
-      
+
       - name: Upload test summary
         if: always()
         uses: actions/upload-artifact@v4
