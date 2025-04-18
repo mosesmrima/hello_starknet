@@ -41,46 +41,67 @@ jobs:
       - name: Process test results
         id: process_results
         run: |
-          # Store the complete output for reference
-          cat test_output.txt > full_test_output.txt
+          # Strip ANSI color codes from test output
+          sed 's/\x1B\[[0-9;]*[JKmsu]//g' test_output.txt > cleaned_test_output.txt
+          
+          # Debug: Print cleaned test output
+          echo "Debug: Contents of cleaned_test_output.txt"
+          cat cleaned_test_output.txt
           
           # Extract the summary line showing passed/failed counts
-          SUMMARY=$(grep -E "Tests: [0-9]+ passed, [0-9]+ failed" test_output.txt || echo "Tests: 0 passed, 0 failed")
+          SUMMARY=$(grep -E "Tests: [0-9]+ passed, [0-9]+ failed" cleaned_test_output.txt || echo "Tests: 0 passed, 0 failed")
+          echo "Debug: Summary line: $SUMMARY"
           
-          # Extract numbers using basic shell commands
-          PASSED=$(echo "$SUMMARY" | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
-          FAILED=$(echo "$SUMMARY" | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+")
+          # Extract passed and failed counts
+          PASSED=$(echo "$SUMMARY" | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
+          FAILED=$(echo "$SUMMARY" | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+" || echo "0")
           TOTAL=$((PASSED + FAILED))
+          echo "Debug: Passed: $PASSED, Failed: $FAILED, Total: $TOTAL"
           
-          # Build a simple JSON with the summary information
+          # Initialize JSON output
           echo "{" > test_results.json
           echo "  \"summary\": {" >> test_results.json
           echo "    \"total\": $TOTAL," >> test_results.json
           echo "    \"passed\": $PASSED," >> test_results.json
           echo "    \"failed\": $FAILED" >> test_results.json
           echo "  }," >> test_results.json
-          
-          # Get a list of failed tests
           echo "  \"failed_tests\": [" >> test_results.json
-          grep "\[FAIL\]" test_output.txt | 
-          while read -r fail_line; do
-            # Extract test name from [FAIL] line
-            TEST_NAME=$(echo "$fail_line" | sed 's/\[FAIL\] \(.*\)/\1/' | sed 's/"/\\"/g')
-            # Get the Failure data line immediately following the [FAIL] line
-            REASON=$(grep -A1 "$fail_line" test_output.txt | grep "Failure data:" | sed 's/Failure data: \(.*\)/\1/' | sed 's/"/\\"/g')
-            # Skip if REASON is empty to avoid malformed JSON
-            if [ -n "$REASON" ]; then
-              echo "    {\"name\": \"$TEST_NAME\", \"reason\": \"$REASON\"}," >> test_results.json
+          
+          # Process failed tests using a loop to read the file line by line
+          FAIL_FOUND=false
+          TEST_NAME=""
+          while IFS= read -r line; do
+            if echo "$line" | grep -q "\[FAIL\]"; then
+              TEST_NAME=$(echo "$line" | sed 's/\[FAIL\] \(.*\)/\1/' | sed 's/"/\\"/g' | sed "s/'/\\'/g")
+              FAIL_FOUND=true
+              echo "Debug: Found failed test: name='$TEST_NAME'"
+            elif [ "$FAIL_FOUND" = true ] && echo "$line" | grep -q "Failure data:"; then
+              REASON=$(echo "$line" | sed 's/Failure data: \(.*\)/\1/' | sed 's/"/\\"/g' | sed "s/'/\\'/g")
+              echo "Debug: Found reason: reason='$REASON'"
+              if [ -n "$TEST_NAME" ] && [ -n "$REASON" ]; then
+                echo "    {\"name\": \"$TEST_NAME\", \"reason\": \"$REASON\"}," >> test_results.json
+              else
+                echo "Debug: Skipping test due to empty name or reason"
+              fi
+              FAIL_FOUND=false
+              TEST_NAME=""
             fi
-          done
-          # Remove trailing comma from the last entry if any failed tests exist
-          if [ "$FAILED" -gt 0 ]; then
-            sed -i '$ s/,$//' test_results.json
+          done < cleaned_test_output.txt
+          
+          # Remove trailing comma if failed tests exist
+          if [ "$FAILED" -gt 0 ] && grep -q "name" test_results.json; then
+            sed -i '/"failed_tests": \[/!b;:a;/\]/!{N;ba};s/,\n\s*\]/\n  \]/' test_results.json
           fi
+          
+          # Close JSON
           echo "  ]" >> test_results.json
           echo "}" >> test_results.json
           
-          # Set output variables for next steps
+          # Debug: Print final JSON
+          echo "Debug: Contents of test_results.json"
+          cat test_results.json
+          
+          # Set output variables
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "PASSED=$PASSED" >> $GITHUB_ENV
           echo "FAILED=$FAILED" >> $GITHUB_ENV
@@ -95,6 +116,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          # Use cleaned test output
           echo "## Test Results" > test_summary.md
           
           if [ "$STATUS" == "success" ]; then
@@ -104,20 +126,33 @@ jobs:
             
             echo "" >> test_summary.md
             echo "### Failed Tests" >> test_summary.md
-            grep "\[FAIL\]" test_output.txt | 
-            while read -r line; do
-              TEST_NAME=$(echo "$line" | sed 's/\[FAIL\] \(.*\)/\1/')
-              FAILURE_DATA=$(grep -A1 "$line" test_output.txt | grep "Failure data:" | sed 's/Failure data: \(.*\)/\1/')
-              echo "- **$TEST_NAME**" >> test_summary.md
-              echo "  - Reason: $FAILURE_DATA" >> test_summary.md
-            done
+            FAIL_FOUND=false
+            TEST_NAME=""
+            while IFS= read -r line; do
+              if echo "$line" | grep -q "\[FAIL\]"; then
+                TEST_NAME=$(echo "$line" | sed 's/\[FAIL\] \(.*\)/\1/')
+                FAIL_FOUND=true
+                echo "Debug: Found failed test for summary: name='$TEST_NAME'"
+              elif [ "$FAIL_FOUND" = true ] && echo "$line" | grep -q "Failure data:"; then
+                FAILURE_DATA=$(echo "$line" | sed 's/Failure data: \(.*\)/\1/')
+                echo "Debug: Found failure data for summary: reason='$FAILURE_DATA'"
+                echo "- **$TEST_NAME**" >> test_summary.md
+                echo "  - Reason: $FAILURE_DATA" >> test_summary.md
+                FAIL_FOUND=false
+                TEST_NAME=""
+              fi
+            done < cleaned_test_output.txt
           fi
           
           echo "" >> test_summary.md
           echo "### Complete Test Output" >> test_summary.md
           echo '```' >> test_summary.md
-          cat test_output.txt >> test_summary.md
+          cat cleaned_test_output.txt >> test_summary.md
           echo '```' >> test_summary.md
+          
+          # Debug: Print test summary
+          echo "Debug: Contents of test_summary.md"
+          cat test_summary.md
 
       - name: Upload test results JSON
         if: always()
