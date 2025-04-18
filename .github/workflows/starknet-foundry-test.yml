@@ -38,7 +38,7 @@ jobs:
         id: test_run
         run: snforge test > test_output.txt 2>&1 || true
 
-      - name: Process test results
+        - name: Process test results
         id: process_results
         run: |
           # Store the complete output for reference
@@ -48,8 +48,8 @@ jobs:
           SUMMARY=$(grep -E "Tests: [0-9]+ passed, [0-9]+ failed" test_output.txt || echo "Tests: 0 passed, 0 failed")
           
           # Extract numbers using basic shell commands
-          PASSED=$(echo $SUMMARY | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
-          FAILED=$(echo $SUMMARY | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+")
+          PASSED=$(echo "$SUMMARY" | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
+          FAILED=$(echo "$SUMMARY" | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+")
           TOTAL=$((PASSED + FAILED))
           
           # Build a simple JSON with the summary information
@@ -62,11 +62,16 @@ jobs:
           
           # Get a list of failed tests
           echo "  \"failed_tests\": [" >> test_results.json
-          grep -A1 "\[FAIL\]" test_output.txt | grep "Failure data:" | 
-          while read -r line; do
-            TEST_NAME=$(grep -B1 "$line" test_output.txt | grep "\[FAIL\]" | sed 's/\[FAIL\] \(.*\)/\1/')
-            REASON=$(echo "$line" | sed 's/Failure data: \(.*\)/\1/')
-            echo "    {\"name\": \"$TEST_NAME\", \"reason\": $REASON}," >> test_results.json
+          grep "\[FAIL\]" test_output.txt | 
+          while read -r fail_line; do
+            # Extract test name from [FAIL] line
+            TEST_NAME=$(echo "$fail_line" | sed 's/\[FAIL\] \(.*\)/\1/' | sed 's/"/\\"/g')
+            # Get the Failure data line immediately following the [FAIL] line
+            REASON=$(grep -A1 "$fail_line" test_output.txt | grep "Failure data:" | sed 's/Failure data: \(.*\)/\1/' | sed 's/"/\\"/g')
+            # Skip if REASON is empty to avoid malformed JSON
+            if [ -n "$REASON" ]; then
+              echo "    {\"name\": \"$TEST_NAME\", \"reason\": \"$REASON\"}," >> test_results.json
+            fi
           done
           # Remove trailing comma from the last entry if any failed tests exist
           if [ "$FAILED" -gt 0 ]; then
