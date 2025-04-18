@@ -38,7 +38,7 @@ jobs:
         id: test_run
         run: snforge test > test_output.txt 2>&1 || true
 
-        - name: Process test results
+      - name: Process test results
         id: process_results
         run: |
           # Store the complete output for reference
