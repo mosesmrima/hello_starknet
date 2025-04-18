@@ -34,132 +34,84 @@ jobs:
           scarb --version
           snforge --version
 
-      - name: Run Starknet Foundry tests with detailed output
+      - name: Run Starknet Foundry tests
         id: test_run
+        run: snforge test > test_output.txt 2>&1 || true
+
+      - name: Process test results
+        id: process_results
         run: |
-          # Run tests and capture all output
-          snforge test > test_output.txt 2>&1 || true
-          
-          # Store the full output for debugging
+          # Store the complete output for reference
           cat test_output.txt > full_test_output.txt
           
-          # Create an empty JSON file with the array structure
-          echo '{"summary":{"total":0,"passed":0,"failed":0},"tests":[]}' > test_results.json
+          # Extract the summary line showing passed/failed counts
+          SUMMARY=$(grep -E "Tests: [0-9]+ passed, [0-9]+ failed" test_output.txt || echo "Tests: 0 passed, 0 failed")
           
-          # Extract test results and save them to a temporary file
-          awk '
-          BEGIN { total=0; passed=0; failed=0; current_test=""; }
+          # Extract numbers using basic shell commands
+          PASSED=$(echo $SUMMARY | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+")
+          FAILED=$(echo $SUMMARY | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+")
+          TOTAL=$((PASSED + FAILED))
           
-          /\[(PASS|FAIL)\]/ {
-            # Extract test name and status
-            for(i=1; i<=NF; i++) {
-              if($i ~ /^\[(PASS|FAIL)\]$/) {
-                status = substr($i, 2, length($i)-2);
-                # Extract the test name (everything after the status until end of line)
-                test_name = "";
-                for(j=i+1; j<=NF; j++) {
-                  if(j > i+1) test_name = test_name " ";
-                  test_name = test_name $j;
-                }
-                gsub(/\(.*\)$/, "", test_name); # Remove gas info if present
-                
-                # Increment counters
-                total++;
-                if(status == "PASS") passed++;
-                if(status == "FAIL") failed++;
-                
-                # Save current test for possible failure reason
-                current_test = test_name;
-                
-                # Write test entry
-                print "{\"name\":\"" current_test "\",\"success\":" (status == "PASS" ? "true" : "false") ",\"reason\":" (status == "PASS" ? "null" : "\"\"") "}," > "test_entries.txt";
-                
-                # If status is PASS, there will be no failure data
-                if(status == "PASS") current_test = "";
-                
-                break;
-              }
-            }
-          }
+          # Build a simple JSON with the summary information
+          echo "{" > test_results.json
+          echo "  \"summary\": {" >> test_results.json
+          echo "    \"total\": $TOTAL," >> test_results.json
+          echo "    \"passed\": $PASSED," >> test_results.json
+          echo "    \"failed\": $FAILED" >> test_results.json
+          echo "  }," >> test_results.json
           
-          # Look for failure data
-          /Failure data:/ {
-            if(current_test != "") {
-              # Extract the failure reason
-              reason = substr($0, index($0, "Failure data:") + 13);
-              gsub(/\"/, "\\\"", reason); # Escape quotes
-              
-              # Update the last test entry with the reason
-              system("sed -i \"$ s/,\\\"reason\\\":\\\"\\\"/,\\\"reason\\\":\\\"" reason "\\\"/\" test_entries.txt");
-              
-              # Clear current test
-              current_test = "";
-            }
-          }
+          # Get a list of failed tests
+          echo "  \"failed_tests\": [" >> test_results.json
+          grep -A1 "\[FAIL\]" test_output.txt | grep "Failure data:" | 
+          while read -r line; do
+            TEST_NAME=$(grep -B1 "$line" test_output.txt | grep "\[FAIL\]" | sed 's/\[FAIL\] \(.*\)/\1/')
+            REASON=$(echo "$line" | sed 's/Failure data: \(.*\)/\1/')
+            echo "    {\"name\": \"$TEST_NAME\", \"reason\": $REASON}," >> test_results.json
+          done
+          # Remove trailing comma from the last entry if any failed tests exist
+          if [ "$FAILED" -gt 0 ]; then
+            sed -i '$ s/,$//' test_results.json
+          fi
+          echo "  ]" >> test_results.json
+          echo "}" >> test_results.json
           
-          END {
-            # Output summary of results
-            print "Tests completed: " total " total, " passed " passed, " failed " failed";
-          }
-          ' test_output.txt
+          # Set output variables for next steps
+          echo "TOTAL=$TOTAL" >> $GITHUB_ENV
+          echo "PASSED=$PASSED" >> $GITHUB_ENV
+          echo "FAILED=$FAILED" >> $GITHUB_ENV
           
-          # Generate the final JSON file by combining summary and test entries
-          awk -v total="$total" -v passed="$passed" -v failed="$failed" '
-          BEGIN {
-            print "{\"summary\":{\"total\":" total ",\"passed\":" passed ",\"failed\":" failed "},\"tests\":[";
-          }
-          
-          {
-            # Remove trailing comma from the last entry
-            if(NR == 1) {
-              print $0;
-            } else {
-              line = $0;
-              if(NR == FNR) { 
-                # If this is the last line, remove trailing comma
-                sub(/,$/, "", line);
-              }
-              print line;
-            }
-          }
-          
-          END {
-            print "]}";
-          }
-          ' test_entries.txt > test_results.json
-          
-          # Count actual test entries
-          total=$(grep -c "name" test_entries.txt)
-          passed=$(grep -c "\"success\":true" test_entries.txt)
-          failed=$(grep -c "\"success\":false" test_entries.txt)
-          
-          # Fix JSON with correct counts (in case awk didn't get them right)
-          sed -i "s/\"total\":[0-9]*/\"total\":$total/" test_results.json
-          sed -i "s/\"passed\":[0-9]*/\"passed\":$passed/" test_results.json
-          sed -i "s/\"failed\":[0-9]*/\"failed\":$failed/" test_results.json
+          # Determine overall status
+          if [ "$FAILED" -eq 0 ]; then
+            echo "STATUS=success" >> $GITHUB_ENV
+          else
+            echo "STATUS=failure" >> $GITHUB_ENV
+          fi
 
-      - name: Create readable test summary
+      - name: Create test summary
         if: always()
         run: |
           echo "## Test Results" > test_summary.md
           
-          # Use jq to parse the JSON and create a summary
-          TOTAL=$(jq '.summary.total' test_results.json)
-          PASSED=$(jq '.summary.passed' test_results.json)
-          FAILED=$(jq '.summary.failed' test_results.json)
-          
-          echo "**Summary:** $PASSED/$TOTAL passed, $FAILED failed" >> test_summary.md
-          
-          echo "### Detailed Results" >> test_summary.md
-          echo "| Test | Status | Reason (if failed) |" >> test_summary.md
-          echo "|------|--------|---------------------|" >> test_summary.md
-          
-          jq -r '.tests[] | "| " + .name + " | " + (if .success then "✅ PASS" else "❌ FAIL" end) + " | " + (if .reason then .reason else "" end) + " |"' test_results.json >> test_summary.md
+          if [ "$STATUS" == "success" ]; then
+            echo "✅ **All tests passed!** ($PASSED of $TOTAL)" >> test_summary.md
+          else
+            echo "❌ **Tests failed:** $FAILED failed, $PASSED passed (of $TOTAL total)" >> test_summary.md
+            
+            echo "" >> test_summary.md
+            echo "### Failed Tests" >> test_summary.md
+            grep "\[FAIL\]" test_output.txt | 
+            while read -r line; do
+              TEST_NAME=$(echo "$line" | sed 's/\[FAIL\] \(.*\)/\1/')
+              FAILURE_DATA=$(grep -A1 "$line" test_output.txt | grep "Failure data:" | sed 's/Failure data: \(.*\)/\1/')
+              echo "- **$TEST_NAME**" >> test_summary.md
+              echo "  - Reason: $FAILURE_DATA" >> test_summary.md
+            done
+          fi
           
           echo "" >> test_summary.md
-          echo "### Raw Test Output" >> test_summary.md
+          echo "### Complete Test Output" >> test_summary.md
           echo '```' >> test_summary.md
-          cat full_test_output.txt >> test_summary.md
+          cat test_output.txt >> test_summary.md
           echo '```' >> test_summary.md
 
       - name: Upload test results JSON
